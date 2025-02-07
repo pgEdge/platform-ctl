@@ -10,10 +10,63 @@ from ace_data_models import (
     SpockDiffTask,
     TableDiffTask,
     TableRepairTask,
+    MerkleTreeTask,
 )
 import ace
+import ace_mtree
 import util
 from ace_exceptions import AceException
+
+
+def merkle_tree_cli(
+    mode,
+    cluster_name,
+    table_name,
+    dbname=None,
+    analyse=False,
+    rebalance=False,
+    block_rows=config.MTREE_BLOCK_SIZE,
+    max_cpu_ratio=config.MAX_CPU_RATIO,
+    nodes="all",
+    quiet_mode=False,
+):
+    task_id = ace_db.generate_task_id()
+
+    try:
+        mtree_task = MerkleTreeTask(
+            mode=mode,
+            cluster_name=cluster_name,
+            _table_name=table_name,
+            _dbname=dbname,
+            analyse=analyse,
+            rebalance=rebalance,
+            block_rows=block_rows,
+            max_cpu_ratio=max_cpu_ratio,
+            quiet_mode=quiet_mode,
+            _nodes=nodes,
+            invoke_method="cli",
+        )
+        mtree_task.scheduler.task_id = task_id
+        mtree_task.scheduler.task_type = "build-merkle-tree"
+        mtree_task.scheduler.task_status = "RUNNING"
+        mtree_task.scheduler.started_at = datetime.now()
+
+        ace.validate_merkle_tree_inputs(mtree_task)
+        ace_db.create_ace_task(task=mtree_task)
+
+        if mode == "build":
+            ace_mtree.build_mtree(mtree_task)
+        elif mode == "update":
+            ace_mtree.update_mtree(mtree_task)
+        elif mode == "rebalance":
+            ace_mtree.update_mtree(mtree_task, rebalance=True)
+
+        mtree_task.connection_pool.close_all()
+    except AceException as e:
+        util.exit_message(str(e))
+    except Exception as e:
+        traceback.print_exc()
+        util.exit_message(f"Unexpected error while running merkle tree: {e}")
 
 
 """
@@ -48,11 +101,11 @@ def table_diff_cli(
     cluster_name,
     table_name,
     dbname=None,
-    block_rows=config.BLOCK_ROWS_DEFAULT,
-    max_cpu_ratio=config.MAX_CPU_RATIO_DEFAULT,
+    block_rows=config.DIFF_BLOCK_SIZE,
+    max_cpu_ratio=config.MAX_CPU_RATIO,
     output="json",
     nodes="all",
-    batch_size=config.BATCH_SIZE_DEFAULT,
+    batch_size=config.DIFF_BATCH_SIZE,
     table_filter=None,
     quiet=False,
 ):
@@ -220,11 +273,11 @@ def table_rerun_cli(
             cluster_name=cluster_name,
             _table_name=table_name,
             _dbname=dbname,
-            block_rows=config.BLOCK_ROWS_DEFAULT,
-            max_cpu_ratio=config.MAX_CPU_RATIO_DEFAULT,
+            block_rows=config.DIFF_BLOCK_SIZE,
+            max_cpu_ratio=config.MAX_CPU_RATIO,
             output="json",
             _nodes="all",
-            batch_size=config.BATCH_SIZE_DEFAULT,
+            batch_size=config.DIFF_BATCH_SIZE,
             table_filter=table_filter,
             quiet_mode=quiet,
             diff_file_path=diff_file,
@@ -292,11 +345,11 @@ def repset_diff_cli(
     cluster_name,
     repset_name,
     dbname=None,
-    block_rows=config.BLOCK_ROWS_DEFAULT,
-    max_cpu_ratio=config.MAX_CPU_RATIO_DEFAULT,
+    block_rows=config.DIFF_BLOCK_SIZE,
+    max_cpu_ratio=config.MAX_CPU_RATIO,
     output="json",
     nodes="all",
-    batch_size=config.BATCH_SIZE_DEFAULT,
+    batch_size=config.DIFF_BATCH_SIZE,
     quiet=False,
     skip_tables=None,
     skip_file=None,

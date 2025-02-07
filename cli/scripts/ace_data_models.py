@@ -249,3 +249,32 @@ class AutoRepairTask:
 
     # Task-specific parameters
     scheduler: Task = field(default_factory=Task)
+
+
+@dataclass
+class MerkleTreeTask:
+    # Can be one of : build, update, rebalance
+    mode: str
+    cluster_name: str
+    _table_name: str
+    _dbname: str
+    _nodes: str
+
+    analyse: bool
+    rebalance: bool
+    block_rows: int
+    max_cpu_ratio: float
+    quiet_mode: bool
+
+    invoke_method: str = "cli"
+
+    # Client role from certificate CN when invoked via API
+    client_role: str = None
+
+    connection_pool: ConnectionPool = field(default_factory=ConnectionPool)
+
+    scheduler: Task = field(default_factory=Task)
+
+    # Derived fields
+    fields: DerivedFields = field(default_factory=DerivedFields)
+    

@@ -25,6 +25,7 @@ import util
 import ace_db
 import ace_config as config
 from ace_data_models import (
+    MerkleTreeTask,
     RepsetDiffTask,
     SchemaDiffTask,
     SpockDiffTask,
@@ -846,6 +847,123 @@ def write_diffs_csv(diff_dict):
         )
 
 
+def validate_merkle_tree_inputs(mtree_task: MerkleTreeTask) -> None:
+    """
+    Validates the basic inputs for a merkle tree task without establishing connections.
+    Raises AceException if validation fails.
+    """
+    if not mtree_task.cluster_name or not mtree_task._table_name:
+        raise AceException("cluster_name and table_name are required arguments")
+
+    if type(mtree_task.block_rows) is str:
+        try:
+            mtree_task.block_rows = int(mtree_task.block_rows)
+        except Exception:
+            raise AceException("Invalid values for ACE_BLOCK_ROWS")
+    elif type(mtree_task.block_rows) is not int:
+        raise AceException("Invalid value type for ACE_BLOCK_ROWS")
+
+    # Capping max block size here to prevent the hash function from taking forever
+    if mtree_task.block_rows > config.MAX_MTREE_BLOCK_SIZE:
+        raise AceException(f"Block row size should be <= {config.MAX_MTREE_BLOCK_SIZE}")
+    if mtree_task.block_rows < config.MIN_MTREE_BLOCK_SIZE:
+        raise AceException(f"Block row size should be >= {config.MIN_MTREE_BLOCK_SIZE}")
+
+    if type(mtree_task.max_cpu_ratio) is int:
+        mtree_task.max_cpu_ratio = float(mtree_task.max_cpu_ratio)
+    elif type(mtree_task.max_cpu_ratio) is str:
+        try:
+            mtree_task.max_cpu_ratio = float(mtree_task.max_cpu_ratio)
+        except Exception:
+            raise AceException("Invalid values for ACE_MAX_CPU_RATIO")
+    elif type(mtree_task.max_cpu_ratio) is not float:
+        raise AceException("Invalid value type for ACE_MAX_CPU_RATIO")
+
+    if mtree_task.max_cpu_ratio > 1.0 or mtree_task.max_cpu_ratio < 0.0:
+        raise AceException(
+            "Invalid value range for ACE_MAX_CPU_RATIO or --max_cpu_ratio"
+        )
+
+    node_list = []
+    try:
+        node_list = parse_nodes(mtree_task._nodes)
+    except ValueError as e:
+        raise AceException(
+            "Nodes should be a comma-separated list of nodenames "
+            + f'\n\tE.g., --nodes="n1,n2". Error: {e}'
+        )
+
+    if len(node_list) > 3:
+        raise AceException(
+            "table-diff currently supports up to a three-way table comparison"
+        )
+
+    if mtree_task._nodes != "all" and len(node_list) == 1:
+        raise AceException("table-diff needs at least two nodes to compare")
+
+    found = check_cluster_exists(mtree_task.cluster_name)
+    if found:
+        util.message(
+            f"Cluster {mtree_task.cluster_name} exists",
+            p_state="success",
+            quiet_mode=mtree_task.quiet_mode,
+        )
+    else:
+        raise AceException(f"Cluster {mtree_task.cluster_name} not found")
+
+    nm_lst = mtree_task._table_name.split(".")
+    if len(nm_lst) != 2:
+        raise AceException(
+            f"TableName {mtree_task._table_name} must be of form" " 'schema.table_name'"
+        )
+    l_schema = nm_lst[0]
+    l_table = nm_lst[1]
+
+    db, pg, node_info = cluster.load_json(mtree_task.cluster_name)
+
+    cluster_nodes = []
+    database = {}
+
+    if mtree_task._dbname:
+        for db_entry in db:
+            if db_entry["db_name"] == mtree_task._dbname:
+                database = db_entry
+                break
+    else:
+        database = db[0]
+
+    if not database:
+        raise AceException(
+            f"Database '{mtree_task._dbname}' "
+            + f"not found in cluster '{mtree_task.cluster_name}'"
+        )
+
+    # Combine db and cluster_nodes into a single json
+    for node in node_info:
+        if node_list and node["name"] not in node_list:
+            continue
+        combined_json = {**database, **node}
+        cluster_nodes.append(combined_json)
+
+    if not node_list:
+        node_list = [node["name"] for node in cluster_nodes]
+
+    if mtree_task._nodes == "all" and len(cluster_nodes) > 3:
+        raise AceException("Table-diff only supports up to three way comparison")
+
+    if mtree_task._nodes != "all" and len(node_list) > 1:
+        for n in node_list:
+            if not any(filter(lambda x: x["name"] == n, cluster_nodes)):
+                raise AceException("Specified nodenames not present in cluster")
+
+    # Store basic task information
+    mtree_task.fields.l_schema = l_schema
+    mtree_task.fields.l_table = l_table
+    mtree_task.fields.node_list = node_list
+    mtree_task.fields.database = database
+    mtree_task.fields.cluster_nodes = cluster_nodes
+
+
 def validate_table_diff_inputs(td_task: TableDiffTask) -> None:
     """
     Validates the basic inputs for a table diff task without establishing connections.
@@ -863,14 +981,10 @@ def validate_table_diff_inputs(td_task: TableDiffTask) -> None:
         raise AceException("Invalid value type for ACE_BLOCK_ROWS")
 
     # Capping max block size here to prevent the hash function from taking forever
-    if td_task.block_rows > config.MAX_ALLOWED_BLOCK_SIZE:
-        raise AceException(
-            f"Block row size should be <= {config.MAX_ALLOWED_BLOCK_SIZE}"
-        )
-    if td_task.block_rows < config.MIN_ALLOWED_BLOCK_SIZE:
-        raise AceException(
-            f"Block row size should be >= {config.MIN_ALLOWED_BLOCK_SIZE}"
-        )
+    if td_task.block_rows > config.MAX_DIFF_BLOCK_SIZE:
+        raise AceException(f"Block row size should be <= {config.MAX_DIFF_BLOCK_SIZE}")
+    if td_task.block_rows < config.MIN_DIFF_BLOCK_SIZE:
+        raise AceException(f"Block row size should be >= {config.MIN_DIFF_BLOCK_SIZE}")
 
     if type(td_task.max_cpu_ratio) is int:
         td_task.max_cpu_ratio = float(td_task.max_cpu_ratio)
@@ -1005,14 +1119,15 @@ def table_diff_checks(
             user = node_info["db_user"]
             port = node_info.get("port", 5432)
 
-            params, conn = td_task.connection_pool.get_cluster_node_connection(
-                node_info,
-                td_task.cluster_name,
-                invoke_method=td_task.invoke_method,
-                client_role=(
-                    td_task.client_role if td_task.invoke_method == "api" else None
-                ),
-            )
+            if node_info["name"] in td_task.fields.node_list:
+                params, conn = td_task.connection_pool.get_cluster_node_connection(
+                    node_info,
+                    client_role=(
+                        td_task.client_role if td_task.invoke_method == "api" else None
+                    ),
+                )
+            else:
+                continue
 
             curr_cols = get_cols(conn, l_schema, l_table)
             curr_key = get_key(conn, l_schema, l_table)
@@ -1177,6 +1292,131 @@ def table_diff_checks(
         )
 
     return td_task
+
+
+def merkle_tree_checks(
+    mtree_task: MerkleTreeTask, skip_validation: bool = False
+) -> None:
+    """
+    Checks if a table is 'diffable' for a merkle tree.
+
+    TODO: This is a temporary function since all these checks are already a part
+    of the table-diff checks. Will clean this up eventually.
+
+    Returns:
+        The validated and prepared task
+    """
+
+    # First do basic validation
+    if not skip_validation:
+        validate_merkle_tree_inputs(mtree_task)
+
+    # Now do connection-specific validation
+    cols = None
+    key = None
+    conn_params = []
+    conn_list = []
+    host_map = {}
+    required_privileges = ["SELECT"]
+    l_schema = mtree_task.fields.l_schema
+    l_table = mtree_task.fields.l_table
+
+    try:
+        for node_info in mtree_task.fields.cluster_nodes:
+            hostname = node_info["name"]
+            host_ip = node_info["public_ip"]
+            user = node_info["db_user"]
+            port = node_info.get("port", 5432)
+
+            if node_info["name"] in mtree_task.fields.node_list:
+                params, conn = mtree_task.connection_pool.get_cluster_node_connection(
+                    node_info,
+                    client_role=(
+                        mtree_task.client_role
+                        if mtree_task.invoke_method == "api"
+                        else None
+                    ),
+                )
+            else:
+                continue
+
+            curr_cols = get_cols(conn, l_schema, l_table)
+            curr_key = get_key(conn, l_schema, l_table)
+
+            if not curr_cols:
+                raise AceException(
+                    f"Table '{mtree_task._table_name}' not found on {hostname}"
+                    ", or the current user does not have adequate privileges"
+                )
+            if not curr_key:
+                raise AceException(
+                    f"No primary key found for '{mtree_task._table_name}'"
+                )
+
+            if (not cols) and (not key):
+                cols = curr_cols
+                key = curr_key
+
+            if (curr_cols != cols) or (curr_key != key):
+                raise AceException("Table schemas don't match")
+
+            cols = curr_cols
+            key = curr_key
+
+            col_types = get_col_types(conn, l_table)
+            col_types_key = f"{host_ip}:{port}"
+
+            if not mtree_task.fields.col_types:
+                mtree_task.fields.col_types = {}
+
+            mtree_task.fields.col_types[col_types_key] = col_types
+
+            authorised, missing_privileges = check_user_privileges(
+                conn,
+                user,
+                l_schema,
+                l_table,
+                required_privileges,
+            )
+
+            # Missing privileges come back as table_<privilege>, but we use
+            # "CREATE/SELECT/INSERT/UPDATE/DELETE" in the required_privileges list
+            # So, we're simply formatting it correctly here for the exception
+            # message
+            missing_privs = [
+                m.split("_")[1].upper()
+                for m in missing_privileges
+                if m.split("_")[1].upper() in required_privileges
+            ]
+            exception_msg = (
+                f'User "{user}" does not have the necessary privileges'
+                f" to run {', '.join(missing_privs)} "
+                f'on table "{l_schema}.{l_table}" '
+                f'on node "{hostname}"'
+            )
+
+            if not authorised:
+                raise AceException(exception_msg)
+
+            conn_list.append(conn)
+            conn_params.append(params)
+            host_map[host_ip + ":" + str(port)] = hostname
+
+    except Exception as e:
+        raise e
+
+    util.message(
+        "Connections successful to nodes in cluster",
+        p_state="success",
+        quiet_mode=mtree_task.quiet_mode,
+    )
+
+    # Psycopg connection objects cannot be pickled easily,
+    # so, we send the connection parameters instead
+    mtree_task.fields.conn_params = conn_params
+    mtree_task.fields.host_map = host_map
+    mtree_task.fields.cols = cols
+    mtree_task.fields.key = key
 
 
 def check_repair_option_compatibility(tr_task: TableRepairTask) -> None:
@@ -1357,8 +1597,6 @@ def table_repair_checks(
 
             params, conn = tr_task.connection_pool.get_cluster_node_connection(
                 nd,
-                tr_task.cluster_name,
-                invoke_method=tr_task.invoke_method,
                 client_role=(tr_task.client_role if config.USE_CERT_AUTH else None),
             )
 
@@ -1447,14 +1685,10 @@ def validate_repset_diff_inputs(rd_task: RepsetDiffTask) -> None:
         raise AceException("Invalid value type for ACE_BLOCK_ROWS or --block_rows")
 
     # Capping max block size here to prevent the hash function from taking forever
-    if rd_task.block_rows > config.MAX_ALLOWED_BLOCK_SIZE:
-        raise AceException(
-            f"Block row size should be <= {config.MAX_ALLOWED_BLOCK_SIZE}"
-        )
-    if rd_task.block_rows < config.MIN_ALLOWED_BLOCK_SIZE:
-        raise AceException(
-            f"Block row size should be >= {config.MIN_ALLOWED_BLOCK_SIZE}"
-        )
+    if rd_task.block_rows > config.MAX_DIFF_BLOCK_SIZE:
+        raise AceException(f"Block row size should be <= {config.MAX_DIFF_BLOCK_SIZE}")
+    if rd_task.block_rows < config.MIN_DIFF_BLOCK_SIZE:
+        raise AceException(f"Block row size should be >= {config.MIN_DIFF_BLOCK_SIZE}")
 
     if type(rd_task.max_cpu_ratio) is int:
         rd_task.max_cpu_ratio = float(rd_task.max_cpu_ratio)
@@ -1569,8 +1803,6 @@ def repset_diff_checks(
             ) or (not rd_task.fields.node_list):
                 _, conn = rd_task.connection_pool.get_cluster_node_connection(
                     nd,
-                    rd_task.cluster_name,
-                    invoke_method=rd_task.invoke_method,
                     client_role=(rd_task.client_role if config.USE_CERT_AUTH else None),
                 )
                 conn_list.append(conn)
@@ -1710,8 +1942,6 @@ def spock_diff_checks(
             ) or (not sd_task.fields.node_list):
                 params, conn = sd_task.connection_pool.get_cluster_node_connection(
                     nd,
-                    sd_task.cluster_name,
-                    invoke_method=sd_task.invoke_method,
                     client_role=(sd_task.client_role if config.USE_CERT_AUTH else None),
                 )
                 conn_params.append(params)
@@ -1821,8 +2051,6 @@ def schema_diff_checks(
             ) or (not sc_task.fields.node_list):
                 _, conn = sc_task.connection_pool.get_cluster_node_connection(
                     nd,
-                    sc_task.cluster_name,
-                    invoke_method=sc_task.invoke_method,
                     client_role=(sc_task.client_role if config.USE_CERT_AUTH else None),
                 )
                 conn_list.append(conn)
@@ -1957,7 +2185,7 @@ def update_spock_exception_checks(
         for node in cluster_nodes:
             if node["name"] == node_name:
                 # FIXME: Figure out connection handling here
-                _, conn = conn_pool.get_cluster_node_connection(node, cluster_name)
+                _, conn = conn_pool.get_cluster_node_connection(node)
                 conn.autocommit = False
 
     except Exception as e:
@@ -2021,5 +2249,6 @@ if __name__ == "__main__":
             "spock-exception-update": ace_cli.update_spock_exception_cli,
             "auto-repair": ace_core.auto_repair,
             "start": ace_daemon.start_ace,
+            "mtree": ace_cli.merkle_tree_cli,
         }
     )

@@ -67,11 +67,11 @@ def table_diff_api():
     cluster_name = data.get("cluster_name")
     table_name = data.get("table_name")
     dbname = data.get("dbname")
-    block_rows = data.get("block_rows", config.BLOCK_ROWS_DEFAULT)
-    max_cpu_ratio = data.get("max_cpu_ratio", config.MAX_CPU_RATIO_DEFAULT)
+    block_rows = data.get("block_rows", config.DIFF_BLOCK_SIZE)
+    max_cpu_ratio = data.get("max_cpu_ratio", config.MAX_CPU_RATIO)
     output = data.get("output", "json")
     nodes = data.get("nodes", "all")
-    batch_size = data.get("batch_size", config.BATCH_SIZE_DEFAULT)
+    batch_size = data.get("batch_size", config.DIFF_BATCH_SIZE)
     table_filter = data.get("table_filter")
     quiet = data.get("quiet", False)
 
@@ -280,11 +280,11 @@ def table_rerun_api():
             cluster_name=cluster_name,
             _table_name=table_name,
             _dbname=dbname,
-            block_rows=config.BLOCK_ROWS_DEFAULT,
-            max_cpu_ratio=config.MAX_CPU_RATIO_DEFAULT,
+            block_rows=config.DIFF_BLOCK_SIZE,
+            max_cpu_ratio=config.MAX_CPU_RATIO,
             output="json",
             _nodes="all",
-            batch_size=config.BATCH_SIZE_DEFAULT,
+            batch_size=config.DIFF_BATCH_SIZE,
             quiet_mode=quiet,
             diff_file_path=diff_file,
             invoke_method="api",
@@ -360,11 +360,11 @@ def repset_diff_api():
     cluster_name = data.get("cluster_name")
     repset_name = data.get("repset_name")
     dbname = data.get("dbname")
-    block_rows = data.get("block_rows", config.BLOCK_ROWS_DEFAULT)
-    max_cpu_ratio = data.get("max_cpu_ratio", config.MAX_CPU_RATIO_DEFAULT)
+    block_rows = data.get("block_rows", config.DIFF_BLOCK_SIZE)
+    max_cpu_ratio = data.get("max_cpu_ratio", config.MAX_CPU_RATIO)
     output = data.get("output", "json")
     nodes = data.get("nodes", "all")
-    batch_size = data.get("batch_size", config.BATCH_SIZE_DEFAULT)
+    batch_size = data.get("batch_size", config.DIFF_BATCH_SIZE)
     quiet = data.get("quiet", False)
     skip_tables = data.get("skip_tables")
     skip_file = data.get("skip_file")

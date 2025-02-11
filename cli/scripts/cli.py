@@ -614,6 +614,7 @@ def unpack_comp(p_app, p_old_ver, p_new_ver):
     tar = tarfile.open(fileobj=tarFileObj, mode="r")
 
     new_comp_dir = p_app + "_new"
+    old_comp_dir = p_app + "_old"
 
     try:
         tar.extractall(path=new_comp_dir)
@@ -687,39 +688,44 @@ def unpack_comp(p_app, p_old_ver, p_new_ver):
                 os.mkdir(backup_target_dir)
             if not os.path.exists(os.path.join(backup_target_dir, p_app)):
                 my_logger.info("backing up the old version of %s " % p_app)
-                util.copytree(
-                    f"{os.path.join(MY_HOME, p_app)}  {os.path.join(backup_target_dir, p_app)}"
-                )
+                util.copytree(f"{os.path.join(MY_HOME, p_app)}  {os.path.join(backup_target_dir, p_app)}")
 
             msg = p_app + " upgrade staged for completion."
             my_logger.info(msg)
+            if p_app in ('hub'):
+                copy2(os.path.join(MY_HOME, MY_CMD), backup_target_dir)
+                os.rename(new_comp_dir, "hub_new")
+                ## run the update_hub script in the _new directory
+                upd_hub_cmd = sys.executable + " hub_new" + os.sep + "hub" + os.sep + "scripts" + os.sep + "update_hub.py "
+                os.system(upd_hub_cmd + p_old_ver + " " + p_new_ver)
+            else:
+                my_logger.info("renaming the existing folder %s" % p_app)
+                os.rename(p_app, p_app+"_old")
+                my_logger.info("copying the new files to folder %s" % p_app)
 
-            my_logger.info("copying the new files over folder %s" % p_app)
+                util.copytree(f"{os.path.join(MY_HOME, new_comp_dir, p_app)}  {os.path.join(MY_HOME, p_app)}")
 
-            util.copytree(
-                f"{os.path.join(MY_HOME, new_comp_dir, p_app, '.')}  {os.path.join(MY_HOME, p_app)}"
-            )
-
-            my_logger.info(p_app + " upgrade completed.")
-
+                my_logger.info("Restoring the conf and extension files if any")
+                util.restore_conf_ext_files(os.path.join(MY_HOME, p_app+"_old"), os.path.join(MY_HOME, p_app))
+                my_logger.info(p_app + " upgrade completed.")
         except Exception as upgrade_exception:
-            error_msg = (
-                "Error while upgrading the " + p_app + " : " + str(upgrade_exception)
-            )
+            error_msg = "Error while upgrading the " + p_app + " : " + str(upgrade_exception)
             my_logger.error(error_msg)
             my_logger.error(traceback.format_exc())
             if isJSON:
                 json_dict = {}
-                json_dict["state"] = "error"
-                json_dict["component"] = p_app
-                json_dict["msg"] = str(upgrade_exception)
+                json_dict['state'] = "error"
+                json_dict['component'] = p_app
+                json_dict['msg'] = str(upgrade_exception)
                 error_msg = json.dumps([json_dict])
             if not isSILENT:
                 print(error_msg)
-            return_value = 1
+                return_value = 1
 
     if os.path.exists(os.path.join(MY_HOME, new_comp_dir)):
         util.delete_dir(os.path.join(MY_HOME, new_comp_dir))
+    if os.path.exists(os.path.join(MY_HOME, old_comp_dir)):
+        util.delete_dir(os.path.join(MY_HOME, old_comp_dir))
 
     return return_value
 
